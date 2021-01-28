@@ -7,6 +7,10 @@ import gzip
 
 from datetime import datetime, timedelta
 
+from requests import Session
+
+from sentry_sdk import Hub
+from sentry_sdk.consts import VERSION
 from sentry_sdk.utils import Dsn, logger, capture_internal_exceptions, json_dumps
 from sentry_sdk.worker import BackgroundWorker
 from sentry_sdk.envelope import Envelope
@@ -32,7 +36,9 @@ if MYPY:
 
 try:
     from urllib.request import getproxies
+
 except ImportError:
+    # noinspection PyUnresolvedReferences
     from urllib import getproxies  # type: ignore
 
 
@@ -92,10 +98,12 @@ class Transport(object):
         """Forcefully kills the transport."""
         pass
 
+    # noinspection PyBroadException
     def __del__(self):
         # type: () -> None
         try:
             self.kill()
+
         except Exception:
             pass
 
@@ -122,8 +130,6 @@ class HttpTransport(Transport):
         self, options  # type: Dict[str, Any]
     ):
         # type: (...) -> None
-        from sentry_sdk.consts import VERSION
-
         Transport.__init__(self, options)
         assert self.parsed_dsn is not None
         self.options = options
@@ -138,9 +144,6 @@ class HttpTransport(Transport):
             https_proxy=options["https_proxy"],
             ca_certs=options["ca_certs"],
         )
-
-        from sentry_sdk import Hub
-
         self.hub_cls = Hub
 
     def _update_rate_limits(self, response):
@@ -268,7 +271,8 @@ class HttpTransport(Transport):
         )
         return None
 
-    def _get_pool_options(self, ca_certs):
+    @staticmethod
+    def _get_pool_options(ca_certs):
         # type: (Optional[Any]) -> Dict[str, Any]
         return {
             "num_pools": 2,
@@ -276,7 +280,8 @@ class HttpTransport(Transport):
             "ca_certs": ca_certs or certifi.where(),
         }
 
-    def _in_no_proxy(self, parsed_dsn):
+    @staticmethod
+    def _in_no_proxy(parsed_dsn):
         # type: (Dsn) -> bool
         no_proxy = getproxies().get("no")
         if not no_proxy:
@@ -370,11 +375,126 @@ class _FunctionTransport(Transport):
     ):
         # type: (...) -> None
         self._func(event)
-        return None
+
+    def capture_envelope(self, envelope):
+        logger.debug("capture_envelope")
+
+
+class _WrappedSession(Session):
+    def __init__(self, read_timeout, connect_timeout):
+        super().__init__()
+        self.timeout = (read_timeout, connect_timeout)
+
+    def request(self, *args, **kwargs):
+        kwargs.setdefault("timeout", self.timeout)
+        return super().request(*args, **kwargs)
+
+
+class NoThreadHttpTransport(HttpTransport):
+    """HTTP transport without background queue (for hosting providers like www.pythonanywhere.com)"""
+
+    def __init__(
+            self, options  # type: Dict[str, Any]
+    ):
+        # type: (...) -> None
+        Transport.__init__(self, options)
+        assert self.parsed_dsn is not None
+        self.options = options
+        self._auth = self.parsed_dsn.to_auth("sentry.python/%s" % VERSION)
+        self._disabled_until = {}  # type: Dict[DataCategory, datetime]
+        self._retry = urllib3.util.Retry()
+
+        self._session = _WrappedSession(
+            connect_timeout=options.get("transport_connect_timeout", 4),
+            read_timeout=options.get("transport_read_timeout", 60)
+        )
+        self._session.headers.update(
+            {
+                "User-Agent": str(self._auth.client),
+                "X-Sentry-Auth": str(self._auth.to_header()),
+            }
+        )
+        self._configure_session(
+            self.parsed_dsn,
+            http_proxy=options["http_proxy"],
+            https_proxy=options["https_proxy"]
+        )
+
+        self.hub_cls = Hub
+
+    def _configure_session(
+        self,
+        parsed_dsn,  # type: Dsn
+        http_proxy,  # type: Optional[str]
+        https_proxy,  # type: Optional[str]
+    ):
+        # type: (...) -> None
+        no_proxy = self._in_no_proxy(parsed_dsn)
+        proxy = {
+            'https': https_proxy or (not no_proxy and getproxies().get("https")),
+            'http': http_proxy or (not no_proxy and getproxies().get("http")),
+        }
+        self._session.proxies.update(proxy)
+
+    def _send_request(
+        self,
+        body,  # type: bytes
+        headers,  # type: Dict[str, str]
+        endpoint_type="store",  # type: EndpointType
+    ):
+        # type: (...) -> None
+        response = self._session.request(
+            "POST",
+            str(self._auth.get_api_url(endpoint_type)),
+            body=body,
+            headers=headers,
+        )
+
+        self._update_rate_limits(response)
+        if response.status == 429:
+            # if we hit a 429.  Something was rate limited but we already
+            # acted on this in `self._update_rate_limits`.
+            pass
+
+        elif response.status >= 300 or response.status < 200:
+            logger.error(
+                "Unexpected status code: %s (body: %s)",
+                response.status,
+                response.data,
+            )
+
+    def capture_event(
+        self, event  # type: Event
+    ):
+        # type: (...) -> None
+        hub = self.hub_cls.current
+        with hub:
+            with capture_internal_exceptions():
+                self._send_event(event)
+
+    def capture_envelope(
+        self, envelope  # type: Envelope
+    ):
+        # type: (...) -> None
+        hub = self.hub_cls.current
+        with hub:
+            with capture_internal_exceptions():
+                self._send_envelope(envelope)
+
+    def flush(
+        self,
+        timeout,  # type: float
+        callback=None,  # type: Optional[Any]
+    ):
+        logger.debug("Flush requested: not needed")
+
+    def kill(self):
+        logger.debug("Kill requested: not needed")
 
 
 def make_transport(options):
     # type: (Dict[str, Any]) -> Optional[Transport]
+    transport_cls = None  # type: Optional[Type[Transport]]
     ref_transport = options["transport"]
 
     # If no transport is given, we use the http transport class

@@ -9,8 +9,6 @@ from datetime import datetime, timedelta
 
 from requests import Session
 
-from sentry_sdk import Hub
-from sentry_sdk.consts import VERSION
 from sentry_sdk.utils import Dsn, logger, capture_internal_exceptions, json_dumps
 from sentry_sdk.worker import BackgroundWorker
 from sentry_sdk.envelope import Envelope
@@ -130,6 +128,7 @@ class HttpTransport(Transport):
         self, options  # type: Dict[str, Any]
     ):
         # type: (...) -> None
+        from sentry_sdk.consts import VERSION
         Transport.__init__(self, options)
         assert self.parsed_dsn is not None
         self.options = options
@@ -144,6 +143,8 @@ class HttpTransport(Transport):
             https_proxy=options["https_proxy"],
             ca_certs=options["ca_certs"],
         )
+
+        from sentry_sdk import Hub
         self.hub_cls = Hub
 
     def _update_rate_limits(self, response):
@@ -397,6 +398,7 @@ class NoThreadHttpTransport(HttpTransport):
             self, options  # type: Dict[str, Any]
     ):
         # type: (...) -> None
+        from sentry_sdk.consts import VERSION
         Transport.__init__(self, options)
         assert self.parsed_dsn is not None
         self.options = options
@@ -420,6 +422,7 @@ class NoThreadHttpTransport(HttpTransport):
             https_proxy=options["https_proxy"]
         )
 
+        from sentry_sdk import Hub
         self.hub_cls = Hub
 
     def _configure_session(

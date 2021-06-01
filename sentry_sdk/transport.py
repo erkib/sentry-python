@@ -129,6 +129,7 @@ class HttpTransport(Transport):
     ):
         # type: (...) -> None
         from sentry_sdk.consts import VERSION
+
         Transport.__init__(self, options)
         assert self.parsed_dsn is not None
         self.options = options
@@ -145,6 +146,7 @@ class HttpTransport(Transport):
         )
 
         from sentry_sdk import Hub
+
         self.hub_cls = Hub
 
     def _update_rate_limits(self, response):
@@ -395,10 +397,11 @@ class NoThreadHttpTransport(HttpTransport):
     """HTTP transport without background queue (for hosting providers like www.pythonanywhere.com)"""
 
     def __init__(
-            self, options  # type: Dict[str, Any]
+        self, options  # type: Dict[str, Any]
     ):
         # type: (...) -> None
         from sentry_sdk.consts import VERSION
+
         Transport.__init__(self, options)
         assert self.parsed_dsn is not None
         self.options = options
@@ -408,7 +411,7 @@ class NoThreadHttpTransport(HttpTransport):
 
         self._session = _WrappedSession(
             connect_timeout=options.get("transport_connect_timeout", 4),
-            read_timeout=options.get("transport_read_timeout", 60)
+            read_timeout=options.get("transport_read_timeout", 60),
         )
         self._session.headers.update(
             {
@@ -419,10 +422,11 @@ class NoThreadHttpTransport(HttpTransport):
         self._configure_session(
             self.parsed_dsn,
             http_proxy=options["http_proxy"],
-            https_proxy=options["https_proxy"]
+            https_proxy=options["https_proxy"],
         )
 
         from sentry_sdk import Hub
+
         self.hub_cls = Hub
 
     def _configure_session(
@@ -434,8 +438,8 @@ class NoThreadHttpTransport(HttpTransport):
         # type: (...) -> None
         no_proxy = self._in_no_proxy(parsed_dsn)
         proxy = {
-            'https': https_proxy or (not no_proxy and getproxies().get("https")),
-            'http': http_proxy or (not no_proxy and getproxies().get("http")),
+            "https": https_proxy or (not no_proxy and getproxies().get("https")),
+            "http": http_proxy or (not no_proxy and getproxies().get("http")),
         }
         self._session.proxies.update(proxy)
 
